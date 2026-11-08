@@ -1,0 +1,148 @@
+#############################################################
+# TRABAJO R (bioinformática) - Irene López Ramírez NP:144002 - Expresión génica: Control vs Condición
+# Archivo de entrada: archivo-entrada.txt (619 genes)
+# Antes de ejecutar: pon este script y el .txt en la misma carpeta
+# y en RStudio ve a Session > Set Working Directory > To Source File Location
+#############################################################
+
+# Colores que se mantienen en TODO el trabajo
+col_control   <- "steelblue"    # Control
+col_condicion <- "darkorange"   # Condición
+
+
+### 1.- Carga del archivo y exploración (1 pto) ###############
+# - header = TRUE: la primera fila contiene los nombres de las columnas
+# - sep = "\t": el archivo está separado por tabuladores
+# - row.names = 1: la primera columna (nombre del gen) pasa a ser el nombre de las filas
+# - check.names = FALSE: mantiene los nombres de columna tal cual (C1-TPM, 1W5-TPM...)
+datos <- read.table("archivo-entrada.txt", header = TRUE, sep = "\t",
+                    row.names = 1, check.names = FALSE,
+                    quote = "", comment.char = "")
+
+head(datos)   # primeras 6 filas
+tail(datos)   # últimas 6 filas
+dim(datos)    # nº de filas (genes) y nº de columnas -> 619 x 6
+
+# Columnas de cada grupo (según el enunciado: 3 réplicas de cada)
+cols_control   <- 1:3   # C2-TPM, C1-TPM, C3-TPM
+cols_condicion <- 4:6   # 1W5-TPM, 1W6-TPM, 1W5-COV
+
+
+### 2.- Media y desviación estándar por gen (1,5 pto) #########
+# apply(tabla, 1, función) aplica la función a cada FILA (cada gen)
+datos$Media_Control   <- apply(datos[, cols_control],   1, mean)
+datos$DE_Control      <- apply(datos[, cols_control],   1, sd)
+datos$Media_Condicion <- apply(datos[, cols_condicion], 1, mean)
+datos$DE_Condicion    <- apply(datos[, cols_condicion], 1, sd)
+
+head(datos)   # comprobamos que hay 4 columnas nuevas (ahora 10 en total)
+
+# Las medias tienen valores muy distintos (de 0 a más de 100.000), así que
+# para los gráficos usamos log2(media + 1). El "+1" evita log2(0).
+log_media_control   <- log2(datos$Media_Control   + 1)
+log_media_condicion <- log2(datos$Media_Condicion + 1)
+
+
+### 3.- Histogramas en una sola imagen (1 pto) ################
+rango_x <- range(c(log_media_control, log_media_condicion))
+
+par(mfrow = c(1, 2))   # dos gráficos en una sola imagen (1 fila, 2 columnas)
+hist(log_media_control, col = col_control, border = "white",
+     xlim = rango_x, breaks = 20,
+     main = "Control", xlab = "log2(media de expresión + 1)", ylab = "Nº de genes")
+hist(log_media_condicion, col = col_condicion, border = "white",
+     xlim = rango_x, breaks = 20,
+     main = "Condición", xlab = "log2(media de expresión + 1)", ylab = "Nº de genes")
+par(mfrow = c(1, 1))   # volvemos a un gráfico por imagen
+
+
+### 4.- Boxplot en una sola imagen (1,5 pto) ##################
+boxplot(log_media_control, log_media_condicion,
+        names = c("Control", "Condición"),
+        col = c(col_control, col_condicion),
+        main = "Expresión media por gen: Control vs Condición",
+        ylab = "log2(media de expresión + 1)",
+        ylim = c(0, max(rango_x) * 1.15))   # deja hueco arriba para la leyenda
+legend("topleft", legend = c("Control", "Condición"),
+       fill = c(col_control, col_condicion))
+
+
+### 5.- Normalidad y test de comparación de medias (2 pto) ####
+# 5a) Normalidad con el test de Shapiro-Wilk (H0: los datos son normales).
+# Juntamos los valores de todos los genes de cada grupo (1857 valores < 5000,
+# que es el máximo que admite shapiro.test).
+vals_control   <- as.numeric(unlist(datos[, cols_control]))
+vals_condicion <- as.numeric(unlist(datos[, cols_condicion]))
+
+cat("\n--- Normalidad (datos originales) ---\n")
+print(shapiro.test(vals_control))
+print(shapiro.test(vals_condicion))
+
+cat("\n--- Normalidad (datos en log2(x + 1)) ---\n")
+print(shapiro.test(log2(vals_control + 1)))
+print(shapiro.test(log2(vals_condicion + 1)))
+
+# RESULTADO: p-value << 0.05 en los datos originales -> NO son normales
+# (muy asimétricos: pocos genes con expresión enorme y muchos con poca).
+# Con log2 el estadístico W mejora mucho (la distribución se parece más a una
+# normal), aunque Shapiro sigue rechazando porque con 1857 valores detecta
+# cualquier desviación mínima.
+#
+# DECISIÓN: usamos t-test (Welch) sobre los datos en log2(x + 1).
+# Por qué no Wilcoxon (el test no paramétrico habitual cuando no hay normalidad):
+# con solo 3 réplicas por grupo, su p-value mínimo posible es 0.1, así que
+# NUNCA podría salir p < 0.05 (lo comprobamos):
+cat("\np-value mínimo posible de Wilcoxon con 3 vs 3 réplicas:",
+    wilcox.test(c(1, 2, 3), c(4, 5, 6))$p.value, "\n")
+
+# 5b) Test para cada gen. Guardamos el p-value en una columna nueva.
+# tryCatch evita que el bucle se pare si algún gen da error (devuelve NA).
+datos$P_Value <- apply(datos[, 1:6], 1, function(x) {
+  control   <- log2(x[cols_control]   + 1)
+  condicion <- log2(x[cols_condicion] + 1)
+  tryCatch(t.test(control, condicion)$p.value,
+           error = function(e) NA)
+})
+
+head(datos)
+sum(is.na(datos$P_Value))   # genes en los que no se pudo calcular el test
+
+
+### 6.- Genes diferencialmente expresados (1 pto) #############
+# Nos quedamos con los genes con p-value < 0.05 (ignorando los NA)
+genes_de    <- datos[!is.na(datos$P_Value) & datos$P_Value < 0.05, ]
+lista_genes <- rownames(genes_de)
+
+cat("\nGenes diferencialmente expresados (p < 0.05):\n")
+print(lista_genes)
+
+# Sobreexpresado: la media de la Condición es mayor que la del Control
+# Reprimido:      la media de la Condición es menor que la del Control
+total_de        <- nrow(genes_de)
+sobreexpresados <- sum(genes_de$Media_Condicion > genes_de$Media_Control)
+reprimidos      <- sum(genes_de$Media_Condicion < genes_de$Media_Control)
+
+cat("\n--- RESUMEN ---")
+cat("\nTotal de genes DE:", total_de)
+cat("\nSobreexpresados:  ", sobreexpresados)
+cat("\nReprimidos:       ", reprimidos, "\n")
+
+
+### 7.- Heatmap de los genes diferencialmente expresados (2 pts) ###
+# Matriz con las 6 réplicas de los genes DE, en log2(x + 1)
+matriz_de <- as.matrix(log2(genes_de[, 1:6] + 1))
+
+# Barra de colores encima de las columnas: mismos colores que en el resto del trabajo
+colores_columnas <- c(rep(col_control, 3), rep(col_condicion, 3))
+
+heatmap(matriz_de,
+        scale = "row",                    # cada gen se escala por separado (color = más/menos que su media)
+        Colv = NA,                        # no reordena columnas: Control a la izquierda, Condición a la derecha
+        ColSideColors = colores_columnas,
+        col = colorRampPalette(c("navy", "white", "firebrick"))(100),
+        labRow = NA,                      # hay demasiados genes para leer los nombres
+        margins = c(8, 2),
+        main = "Genes diferencialmente expresados (p < 0.05)")
+
+legend("topright", legend = c("Control", "Condición"),
+       fill = c(col_control, col_condicion), bty = "n", cex = 0.8)
